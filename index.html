@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>コンパスでランドマークの方角を表示</title>
+  <style>
+    :root{--size:320px}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;display:flex;flex-direction:column;align-items:center;gap:12px;padding:18px;background:#fbfbfd;color:#111}
+    header{width:100%;max-width:420px;text-align:center}
+    .compass-wrap{width:var(--size);height:var(--size);position:relative}
+    .dial{width:100%;height:100%;border-radius:50%;border:6px solid #222;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 40% 40%, #fff, #eee)}
+    .north{position:absolute;top:12px;left:50%;transform:translateX(-50%);font-weight:700}
+    .arrow{position:absolute;left:50%;top:50%;width:6px;height:40%;transform-origin:50% 100%;transform:translate(-50%,-100%) rotate(0deg);background:transparent;display:flex;align-items:flex-end;justify-content:center}
+    .arrow::after{content:'';display:block;width:0;height:0;border-left:10px solid transparent;border-right:10px solid transparent;border-bottom:18px solid crimson}
+    .marker{position:absolute;left:50%;top:50%;transform-origin:50% 100%;width:6px;height:40%;display:flex;align-items:flex-end;justify-content:center}
+    .marker::after{content:'';display:block;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:14px solid royalblue}
+    .info{max-width:420px;width:100%;display:flex;flex-direction:column;gap:8px}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    select,input,button{padding:8px;border-radius:8px;border:1px solid #ccc;font-size:15px}
+    .small{font-size:13px;color:#666}
+    footer{max-width:420px;font-size:13px;color:#555}
+  </style>
+</head>
+<body>
+  <header>
+    <h1>ランドマーク方角コンパス</h1>
+    <p class="small">iPhoneで使うと現在地からランドマークの方角と距離を矢印で表示します。</p>
+  </header>
+
+  <div class="compass-wrap" aria-hidden>
+    <div class="dial" id="dial">
+      <div class="north">N</div>
+      <div class="arrow" id="compassArrow" title="あなたの進行方向"></div>
+      <div class="marker" id="landmarkMarker" title="ランドマークの方角"></div>
+    </div>
+  </div>
+
+  <div class="info">
+    <div class="controls">
+      <select id="preset">
+        <option value="fuji">富士山 (Mount Fuji)</option>
+        <option value="skytree">東京スカイツリー (Tokyo Skytree)</option>
+        <option value="add">-- カスタムを追加 --</option>
+      </select>
+      <input id="lat" placeholder="緯度 (例: 35.3606)" style="width:140px" />
+      <input id="lon" placeholder="経度 (例: 138.7274)" style="width:140px" />
+      <button id="setBtn">設定</button>
+    </div>
+    <div>
+      <strong id="distance">-</strong>  <span class="small" id="bearingText">方位: -</span>
+    </div>
+    <div class="small">注意: iOS Safariではセンサーと位置情報の許可が必要です。HTTPSで開いてください。</div>
+    <div style="display:flex;gap:8px">
+      <button id="requestPerm">センサー許可を要求</button>
+      <button id="watchLoc">位置監視開始</button>
+    </div>
+  </div>
+
+  <footer>
+    <p>使い方: 「センサー許可を要求」を押してSafariのポップアップで許可してください。位置情報も許可してください。矢印が青ならランドマークの方角を指します。</p>
+  </footer>
+
+<script>
+// ランドマーク定義
+const PRESETS = {
+  fuji: {name:'富士山', lat:35.3606, lon:138.7274},
+  skytree: {name:'東京スカイツリー', lat:35.710063, lon:139.8107}
+};
+
+let target = PRESETS.fuji;
+let userPos = null;
+let heading = 0; // 0..360, 0 = 北
+
+const presetEl = document.getElementById('preset');
+const latEl = document.getElementById('lat');
+const lonEl = document.getElementById('lon');
+const setBtn = document.getElementById('setBtn');
+const marker = document.getElementById('landmarkMarker');
+const compassArrow = document.getElementById('compassArrow');
+const distanceEl = document.getElementById('distance');
+const bearingText = document.getElementById('bearingText');
+const requestPermBtn = document.getElementById('requestPerm');
+const watchLocBtn = document.getElementById('watchLoc');
+
+function updateUI() {
+  if (!userPos || !target) return;
+  const b = bearingTo(userPos.lat, userPos.lon, target.lat, target.lon); // 0..360
+  const dist = haversine(userPos.lat, userPos.lon, target.lat, target.lon);
+  // 相対方位 (端末の向きに対するランドマーク)
+  const rel = (b - heading + 360) % 360; // 0 = 前面(北を向いた状態で正面)
+  // マーカー回転（0が上）
+  marker.style.transform = `translate(-50%,-100%) rotate(${rel}deg)`;
+  bearingText.textContent = `方位: ${b.toFixed(1)}° (相対 ${rel.toFixed(1)}°)`;
+  distanceEl.textContent = dist >= 1000 ? `${(dist/1000).toFixed(2)} km` : `${Math.round(dist)} m`;
+}
+
+function toRad(d){return d*Math.PI/180}
+function toDeg(r){return r*180/Math.PI}
+
+function bearingTo(lat1, lon1, lat2, lon2){
+  const φ1 = toRad(lat1), φ2 = toRad(lat2);
+  const Δλ = toRad(lon2-lon1);
+  const y = Math.sin(Δλ)*Math.cos(φ2);
+  const x = Math.cos(φ1)*Math.sin(φ2) - Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);
+  let θ = toDeg(Math.atan2(y,x));
+  return (θ+360)%360;
+}
+
+function haversine(lat1, lon1, lat2, lon2){
+  const R = 6371000; // metres
+  const φ1 = toRad(lat1), φ2 = toRad(lat2);
+  const Δφ = toRad(lat2-lat1);
+  const Δλ = toRad(lon2-lon1);
+  const a = Math.sin(Δφ/2)*Math.sin(Δφ/2) + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)*Math.sin(Δλ/2);
+  const c = 2*Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+  return R*c;
+}
+
+// DeviceOrientation ハンドラ
+function handleOrientation(e){
+  // iOS Safari provides webkitCompassHeading
+  if (e.webkitCompassHeading !== undefined && e.webkitCompassAccuracy !== undefined) {
+    // webkitCompassHeading: 0 = 北
+    heading = e.webkitCompassHeading; // already degrees
+  } else if (e.alpha !== null) {
+    // fallback: alpha is rotation around z axis. Mapping differs by device orientation.
+    // screen orientation correction
+    const screenAngle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+    // empirical mapping: heading = (360 - alpha + screenAngle) % 360
+    heading = (360 - e.alpha + screenAngle) % 360;
+  }
+  // rotate dial north indicator so that 0deg points to top visually
+  const dial = document.getElementById('dial');
+  dial.style.transform = `rotate(${ -heading }deg)`;
+  // also rotate user's forward arrow to always point up (optional)
+  compassArrow.style.transform = `translate(-50%,-100%) rotate(0deg)`;
+  updateUI();
+}
+
+// 許可リクエスト（iOS向け）
+requestPermBtn.addEventListener('click', async ()=>{
+  // Motion permission (iOS 13+)
+  if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function'){
+    try{
+      const res = await DeviceMotionEvent.requestPermission();
+      // note: Safari may require DeviceOrientationEvent.requestPermission instead
+    }catch(err){ console.warn(err) }
+  }
+  if (typeof DeviceOrientationEvent !== 'undefined' && typeof DeviceOrientationEvent.requestPermission === 'function'){
+    try{
+      const state = await DeviceOrientationEvent.requestPermission();
+      if (state === 'granted') window.addEventListener('deviceorientation', handleOrientation, true);
+    }catch(err){ console.warn(err) }
+  } else {
+    // non iOS or older: just add listener
+    window.addEventListener('deviceorientation', handleOrientation, true);
+  }
+  // attempt to enable compass on iOS by adding listener for deviceorientationabsolute
+  if ('ondeviceorientationabsolute' in window) window.addEventListener('deviceorientationabsolute', handleOrientation, true);
+});
+
+// 位置監視
+let watchId = null;
+watchLocBtn.addEventListener('click', ()=>{
+  if (watchId !== null){ navigator.geolocation.clearWatch(watchId); watchId = null; watchLocBtn.textContent='位置監視開始'; return; }
+  if (!navigator.geolocation){ alert('位置情報が取得できません'); return; }
+  watchId = navigator.geolocation.watchPosition(pos=>{
+    userPos = {lat: pos.coords.latitude, lon: pos.coords.longitude};
+    updateUI();
+  }, err=>{ console.warn(err); alert('位置情報の取得に失敗しました: '+err.message) }, {enableHighAccuracy:true, maximumAge:5000, timeout:10000});
+  watchLocBtn.textContent='位置監視停止';
+});
+
+// プリセット選択
+presetEl.addEventListener('change', ()=>{
+  const v = presetEl.value;
+  if (v === 'add'){
+    latEl.value = '';
+    lonEl.value = '';
+    latEl.focus();
+    return;
+  }
+  target = PRESETS[v];
+  latEl.value = target.lat;
+  lonEl.value = target.lon;
+  updateUI();
+});
+
+setBtn.addEventListener('click', ()=>{
+  const la = parseFloat(latEl.value);
+  const lo = parseFloat(lonEl.value);
+  if (isNaN(la) || isNaN(lo)){ alert('有効な緯度経度を入れてください'); return; }
+  target = {name:'カスタム', lat:la, lon:lo};
+  presetEl.value = 'add';
+  updateUI();
+});
+
+// 初期値反映
+presetEl.value='fuji';
+latEl.value = PRESETS.fuji.lat;
+lonEl.value = PRESETS.fuji.lon;
+
+// ユーザが位置をまだ与えていないときの簡易メッセージ
+if (!('DeviceOrientationEvent' in window) && !('ondeviceorientation' in window)){
+  alert('このブラウザはdeviceorientationイベントをサポートしていません。iPhoneのSafariでHTTPS接続して試してください。');
+}
+
+// 補助: 1回だけ現在地取得
+if (navigator.geolocation){ navigator.geolocation.getCurrentPosition(pos=>{ userPos={lat:pos.coords.latitude, lon:pos.coords.longitude}; updateUI(); }, ()=>{}, {maximumAge:60000}); }
+
+</script>
+</body>
+</html>
