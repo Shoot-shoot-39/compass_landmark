@@ -1,137 +1,214 @@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ARランドマークコンパス</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>方位補正＋ランドマーク方向表示</title>
 <style>
-  body, html {
-    margin: 0; padding: 0; overflow: hidden;
-    background: #000;
-    font-family: sans-serif;
+  body { font-family: sans-serif; margin: 0; padding: 0; }
+  #map { height: 50vh; }
+  #statusBar {
+    padding: 4px 8px; background: #ccc; color: #000; font-size: 14px;
   }
-  #camera {
-    position: fixed;
-    top: 0; left: 0;
-    width: 100vw; height: 100vh;
-    object-fit: cover;
-    z-index: 1;
+  #controls { padding: 8px; }
+  #driftAlert { color: red; font-weight: bold; }
+  .bigButton {
+    padding: 12px 18px; font-size: 16px;
+    background: #007bff; color: #fff; border: none; border-radius: 8px;
   }
-  #label {
-    position: fixed;
-    left: 50%;
-    top: 50%;
-    font-size: 40px;
-    transform: translate(-50%, -50%);
-    color: #ffeb3b;
-    font-weight: bold;
-    text-shadow: 0 0 6px black;
-    z-index: 3;
-  }
-  #lmSelect {
-    position: fixed;
-    top: 10px; left: 10px;
-    z-index: 4;
-    font-size: 18px;
-  }
-  #startBtn {
-    position: fixed;
-    bottom: 10px; left: 10px;
-    z-index: 4;
-    font-size: 18px;
+  #permBtn {
+    padding:4px 8px; font-size:12px; margin-bottom:4px;
   }
 </style>
 </head>
 <body>
 
-<video id="camera" autoplay playsinline></video>
+<div id="statusBar">補正角：0°</div>
 
-<div id="label">→ 富士山</div>
+<div id="controls">
+  <button id="permBtn">方位センサー許可</button><br>
+  <button id="lockOnBtn" class="bigButton">ターゲットロックオン</button>
+  <select id="landmarkSelect">
+    <option value="none">ランドマーク表示なし</option>
+    <option value="fujisan">富士山</option>
+    <option value="skytree">東京スカイツリー</option>
+    <option value="tsukuba">筑波山</option>
+  </select>
+  <div id="driftAlert"></div>
+</div>
 
-<select id="lmSelect">
-  <option value="fujisan">富士山</option>
-  <option value="skytree">スカイツリー</option>
-</select>
+<div id="map"></div>
 
-<button id="startBtn">コンパス・カメラ許可</button>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
 
 <script>
-// ---- ランドマーク座標 ----
+let map;
+let currentPos = null;
+let correctionAngle = 0;
+let targetMeasuredAngle = null;
+let driftBaseAngle = null;
+let driftDetected = false;
+let targetMarker = null;
+let targetLine = null;
+let landmarkLine = null;
+let landmarkLabel = null;
+
+// ランドマーク一覧
 const landmarks = {
-  fujisan:  { name:"富士山",   lat:35.3606, lon:138.7274 },
-  skytree:  { name:"スカイツリー", lat:35.7100, lon:139.8107 }
+  fujisan: { name: "富士山", lat: 35.3606, lng: 138.7274 },
+  skytree: { name: "東京スカイツリー", lat: 35.7100, lng: 139.8107 },
+  tsukuba: { name: "筑波山", lat: 36.2253, lng: 140.1067 }
 };
 
-let currentPos = null;
-let currentHeading = 0;
-
-// ---- 現在地を追跡 ----
-navigator.geolocation.watchPosition((pos) => {
-  currentPos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
-}, console.error, { enableHighAccuracy:true });
-
-// ---- 2点間の方位角 ----
-function bearing(lat1, lon1, lat2, lon2) {
-  const rad = d => d*Math.PI/180;
-  const dLon = rad(lon2 - lon1);
-
-  const y = Math.sin(dLon) * Math.cos(rad(lat2));
-  const x = Math.cos(rad(lat1))*Math.sin(rad(lat2)) -
-            Math.sin(rad(lat1))*Math.cos(rad(lat2))*Math.cos(dLon);
-
-  return (Math.atan2(y, x)*180/Math.PI + 360) % 360;
+function initMap() {
+  map = L.map('map');
+  L.tileLayer('https://cyberjapandata.gsi.go.jp/xyz/std/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    attribution: "地理院タイル"
+  }).addTo(map);
 }
 
-// ---- カメラ起動 ----
-async function startCamera() {
-  const video = document.getElementById("camera");
-  const stream = await navigator.mediaDevices.getUserMedia({
-    video: { facingMode: "environment" },
-    audio: false
-  });
-  video.srcObject = stream;
+function moveToCurrentLocation() {
+  if (currentPos) {
+    map.setView([currentPos.lat, currentPos.lng], 15);
+  }
 }
 
-// ---- ARラベル更新 ----
-function updateLabel() {
-  if (!currentPos) return;
-  
-  const lm = landmarks[lmSelect.value];
-  const targetBearing =
-    bearing(currentPos.lat, currentPos.lon, lm.lat, lm.lon);
-
-  // 画面中央のテキストを、向きに応じて左右に動かす
-  const relative = (targetBearing - currentHeading + 360) % 360;
-  const screenX = ((relative / 360) * window.innerWidth);
-
-  const label = document.getElementById("label");
-  label.style.left = `${screenX}px`;
-  label.textContent = lm.name + " →";
+function updateStatusBar() {
+  const bar = document.getElementById("statusBar");
+  bar.textContent = `補正角：${correctionAngle.toFixed(1)}°`;
+  bar.style.background = correctionAngle === 0 ? "#ccc" : "#a0e0a0";
 }
 
-// 毎フレーム更新
-setInterval(updateLabel, 50);
+function updateDriftAlert(show) {
+  document.getElementById("driftAlert").textContent =
+    show ? "磁気ドリフト疑い検知" : "";
+}
 
-// ---- ボタン → コンパス許可 + カメラ起動 ----
-startBtn.onclick = async () => {
-  // iOS のコンパス許可
-  if (typeof DeviceOrientationEvent.requestPermission === "function") {
-    const perm = await DeviceOrientationEvent.requestPermission();
-    if (perm !== "granted") {
-      alert("コンパスが許可されませんでした");
-      return;
+function computeBearing(lat1, lon1, lat2, lon2) {
+  const toRad = x => x * Math.PI / 180;
+  const y = Math.sin(toRad(lon2 - lon1)) * Math.cos(toRad(lat2));
+  const x =
+    Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(toRad(lon2 - lon1));
+  const brng = Math.atan2(y, x) * 180 / Math.PI;
+  return (brng + 360) % 360;
+}
+
+function drawLine(from, angle, color="blue", labelText=null) {
+  const length = 0.1; // 100m程度
+  const rad = angle * Math.PI / 180;
+  const dest = [
+    from.lat + length * Math.cos(rad),
+    from.lng + length * Math.sin(rad)
+  ];
+
+  const line = L.polyline([ [from.lat, from.lng], dest ], {
+    color, weight: 4
+  }).addTo(map);
+
+  if (labelText) {
+    const mid = [
+      (from.lat + dest[0]) / 2,
+      (from.lng + dest[1]) / 2
+    ];
+    const label = L.marker(mid, {
+      icon: L.divIcon({
+        className: "label",
+        html: `<div style='background:white;padding:2px;border:1px solid #000;font-size:12px;'>${labelText}</div>`
+      })
+    }).addTo(map);
+    return { line, label };
+  }
+  return { line };
+}
+
+// 方位センサー
+async function requestPermission() {
+  if (DeviceOrientationEvent && DeviceOrientationEvent.requestPermission) {
+    const r = await DeviceOrientationEvent.requestPermission();
+    if (r === "granted") alert("許可されました");
+  } else {
+    alert("この端末は手動許可が不要です");
+  }
+}
+
+document.getElementById("permBtn").onclick = requestPermission;
+
+// ロックオン → 次クリックで補正計算
+let waitingTargetSelect = false;
+
+document.getElementById("lockOnBtn").onclick = () => {
+  waitingTargetSelect = true;
+  targetMeasuredAngle = latestHeading;
+  driftBaseAngle = latestHeading;
+  driftDetected = false;
+  updateDriftAlert(false);
+  targetMarker && map.removeLayer(targetMarker);
+  targetLine && map.removeLayer(targetLine);
+  targetMarker = null;
+  targetLine = null;
+  alert("地図上のターゲットをクリックしてください");
+};
+
+map && map.on("click", (e) => {
+  if (!waitingTargetSelect || targetMeasuredAngle == null) return;
+  waitingTargetSelect = false;
+
+  const bearing = computeBearing(currentPos.lat, currentPos.lng, e.latlng.lat, e.latlng.lng);
+
+  correctionAngle = (bearing - targetMeasuredAngle + 360) % 360;
+  updateStatusBar();
+
+  targetMarker = L.marker(e.latlng).addTo(map);
+  const { line } = drawLine(currentPos, bearing, "red", "ターゲット");
+  targetLine = line;
+});
+
+// 位置更新
+navigator.geolocation.watchPosition(pos => {
+  currentPos = { lat: pos.coords.latitude, lng: pos.coords.longitude };
+  if (!map._loaded) initMap();
+  moveToCurrentLocation();
+}, console.error, { enableHighAccuracy: true });
+
+// コンパス
+let latestHeading = 0;
+window.addEventListener("deviceorientationabsolute", (ev) => {
+  if (ev.alpha != null) {
+    latestHeading = ev.alpha;
+
+    if (driftBaseAngle !== null && !driftDetected) {
+      const diff = Math.abs(latestHeading - driftBaseAngle);
+      if (diff > 25) {
+        driftDetected = true;
+        updateDriftAlert(true);
+      }
     }
   }
+});
 
-  window.addEventListener("deviceorientation", (e)=>{
-    if (e.webkitCompassHeading !== undefined) {
-      currentHeading = e.webkitCompassHeading;  // iPhone
-    } else {
-      currentHeading = 360 - e.alpha;           // Android
-    }
-  });
+// ランドマーク選択
+document.getElementById("landmarkSelect").onchange = () => {
+  if (!currentPos) return;
 
-  await startCamera();
+  // 既存削除
+  if (landmarkLine) {
+    landmarkLine.line && map.removeLayer(landmarkLine.line);
+    landmarkLine.label && map.removeLayer(landmarkLine.label);
+    landmarkLine = null;
+  }
+
+  const val = document.getElementById("landmarkSelect").value;
+  if (val === "none") return;
+
+  const lm = landmarks[val];
+  const brng = computeBearing(currentPos.lat, currentPos.lng, lm.lat, lm.lng);
+
+  landmarkLine = drawLine(currentPos, brng, "green", lm.name);
 };
 </script>
+
 </body>
 </html>
