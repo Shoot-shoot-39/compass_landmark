@@ -1,103 +1,115 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="ja">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>ランドマーク方角コンパス</title>
-  <style>
-    :root{--size:320px}
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;margin:0;display:flex;flex-direction:column;align-items:center;gap:12px;padding:18px;background:#fbfbfd;color:#111}
-    header{width:100%;max-width:420px;text-align:center;display:flex;flex-direction:column;gap:8px}
-    .top-buttons{display:flex;gap:8px;justify-content:center;flex-wrap:wrap}
-    .compass-wrap{width:var(--size);height:var(--size);position:relative}
-    .dial{width:100%;height:100%;border-radius:50%;border:6px solid #222;display:flex;align-items:center;justify-content:center;background:radial-gradient(circle at 40% 40%, #fff, #eee)}
-    .north{position:absolute;top:12px;left:50%;transform:translateX(-50%);font-weight:700}
-    .marker{position:absolute;left:50%;top:50%;transform-origin:50% 100%;width:6px;height:40%;display:flex;align-items:flex-end;justify-content:center}
-    .marker::after{content:'';display:block;width:0;height:0;border-left:8px solid transparent;border-right:8px solid transparent;border-bottom:14px solid royalblue}
-    .label{position:absolute;top:-24px;left:50%;transform:translateX(-50%);font-size:14px;background:#fff;padding:2px 6px;border-radius:6px;border:1px solid #ccc;white-space:nowrap}
-    .info{max-width:420px;width:100%;display:flex;flex-direction:column;gap:8px}
-    select,input,button{padding:8px;border-radius:8px;border:1px solid #ccc;font-size:15px}
-    .controls{display:flex;gap:8px;flex-wrap:wrap}
-    .small{font-size:13px;color:#666}
-    footer{max-width:420px;font-size:13px;color:#555}
-  </style>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ランドマーク方位コンパス</title>
+<style>
+  body { font-family: sans-serif; text-align: center; padding: 20px; }
+  #arrow {
+    font-size: 80px;
+    transition: transform 0.2s linear;
+    display: inline-block;
+  }
+</style>
 </head>
 <body>
-  <header>
-    <div class="top-buttons">
-      <button id="requestPerm">センサー許可を要求</button>
-      <button id="watchLoc">位置監視開始</button>
-    </div>
-    <h1>ランドマーク方角コンパス</h1>
-    <p class="small">青い矢印がランドマークの方向を指します。</p>
-  </header>
 
-  <div class="compass-wrap" aria-hidden>
-    <div class="dial" id="dial">
-      <div class="north">N</div>
-      <div class="marker" id="landmarkMarker"><div class="label" id="markerLabel"></div></div>
-    </div>
-  </div>
+<h2>ランドマーク方位コンパス</h2>
 
-  <div class="info">
-    <div class="controls">
-      <select id="preset">
-        <option value="fuji">富士山</option>
-        <option value="skytree">東京スカイツリー</option>
-        <option value="add">-- カスタム追加 --</option>
-      </select>
-      <input id="lat" placeholder="緯度" style="width:140px" />
-      <input id="lon" placeholder="経度" style="width:140px" />
-      <button id="setBtn">設定</button>
-    </div>
-    <div><strong id="distance">-</strong> <span class="small" id="bearingText">方位: -</span></div>
-    <div class="small">iPhoneのSafariでHTTPS接続してください。</div>
-  </div>
+<p>現在地 → ランドマークの方向</p>
+<div id="arrow">⬆️</div>
+
+<p>
+  ランドマーク：
+  <select id="lmSelect">
+    <option value="fujisan">富士山</option>
+    <option value="skytree">スカイツリー</option>
+  </select>
+</p>
+
+<button id="startBtn">コンパス使用を許可</button>
 
 <script>
-const PRESETS={fuji:{name:'富士山',lat:35.3606,lon:138.7274},skytree:{name:'東京スカイツリー',lat:35.710063,lon:139.8107}};
-let target=PRESETS.fuji;
-let userPos=null;
-let heading=0;
-const presetEl=document.getElementById('preset');
-const latEl=document.getElementById('lat');
-const lonEl=document.getElementById('lon');
-const setBtn=document.getElementById('setBtn');
-const marker=document.getElementById('landmarkMarker');
-const label=document.getElementById('markerLabel');
-const distanceEl=document.getElementById('distance');
-const bearingText=document.getElementById('bearingText');
-const requestPermBtn=document.getElementById('requestPerm');
-const watchLocBtn=document.getElementById('watchLoc');
+// ランドマークの位置（緯度・経度）
+const landmarks = {
+  fujisan: { name: "富士山", lat: 35.3606, lon: 138.7274 },
+  skytree: { name: "スカイツリー", lat: 35.7100, lon: 139.8107 }
+};
 
-function updateUI(){
-  if(!userPos||!target)return;
-  const b=bearingTo(userPos.lat,userPos.lon,target.lat,target.lon);
-  const dist=haversine(userPos.lat,userPos.lon,target.lat,target.lon);
-  const rel=(b-heading+360)%360;
-  marker.style.transform=`translate(-50%,-100%) rotate(${rel}deg)`;
-  label.textContent=target.name;
-  bearingText.textContent=`方位: ${b.toFixed(1)}° (相対 ${rel.toFixed(1)}°)`;
-  distanceEl.textContent=dist>=1000?`${(dist/1000).toFixed(2)} km`:`${Math.round(dist)} m`;
+let currentHeading = 0;
+let currentPos = null;
+
+const arrow = document.getElementById("arrow");
+const lmSelect = document.getElementById("lmSelect");
+
+// ----------------------------
+// 現在地取得
+// ----------------------------
+navigator.geolocation.watchPosition((pos) => {
+  currentPos = {
+    lat: pos.coords.latitude,
+    lon: pos.coords.longitude
+  };
+}, console.error, { enableHighAccuracy: true });
+
+
+// ----------------------------
+// 2点間の方位角を計算
+// ----------------------------
+function bearing(lat1, lon1, lat2, lon2) {
+  const toRad = d => d * Math.PI / 180;
+
+  const dLon = toRad(lon2 - lon1);
+  const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+  const x =
+    Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
+    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+
+  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
 }
-function toRad(d){return d*Math.PI/180}
-function toDeg(r){return r*180/Math.PI}
-function bearingTo(lat1,lon1,lat2,lon2){const φ1=toRad(lat1),φ2=toRad(lat2);const Δλ=toRad(lon2-lon1);const y=Math.sin(Δλ)*Math.cos(φ2);const x=Math.cos(φ1)*Math.sin(φ2)-Math.sin(φ1)*Math.cos(φ2)*Math.cos(Δλ);return(toDeg(Math.atan2(y,x))+360)%360;}
-function haversine(lat1,lon1,lat2,lon2){const R=6371000;const φ1=toRad(lat1),φ2=toRad(lat2);const Δφ=toRad(lat2-lat1);const Δλ=toRad(lon2-lon1);const a=Math.sin(Δφ/2)**2+Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;return 2*R*Math.atan2(Math.sqrt(a),Math.sqrt(1-a));}
 
-function handleOrientation(e){if(e.webkitCompassHeading!==undefined){heading=e.webkitCompassHeading;}else if(e.alpha!==null){const screenAngle=(screen.orientation&&screen.orientation.angle)||window.orientation||0;heading=(360-e.alpha+screenAngle)%360;}document.getElementById('dial').style.transform=`rotate(${-heading}deg)`;updateUI();}
 
-requestPermBtn.addEventListener('click',async()=>{if(DeviceOrientationEvent&&DeviceOrientationEvent.requestPermission){try{if(await DeviceOrientationEvent.requestPermission()==='granted')window.addEventListener('deviceorientation',handleOrientation,true);}catch(e){}}else window.addEventListener('deviceorientation',handleOrientation,true);});
+// ----------------------------
+// 画面の矢印を回転
+// ----------------------------
+function updateArrow() {
+  if (!currentPos) return;
 
-let watchId=null;
-watchLocBtn.addEventListener('click',()=>{if(watchId){navigator.geolocation.clearWatch(watchId);watchId=null;watchLocBtn.textContent='位置監視開始';return;}watchId=navigator.geolocation.watchPosition(p=>{userPos={lat:p.coords.latitude,lon:p.coords.longitude};updateUI();},e=>alert(e.message),{enableHighAccuracy:true});watchLocBtn.textContent='位置監視停止';});
+  const lm = landmarks[lmSelect.value];
+  const targetBearing = bearing(currentPos.lat, currentPos.lon, lm.lat, lm.lon);
 
-presetEl.addEventListener('change',()=>{const v=presetEl.value;if(v==='add'){latEl.value='';lonEl.value='';return;}target=PRESETS[v];latEl.value=target.lat;lonEl.value=target.lon;updateUI();});
+  // 自分の向きに対して、ランドマークが何度の方向にあるか
+  const relative = (targetBearing - currentHeading + 360) % 360;
 
-setBtn.addEventListener('click',()=>{const la=parseFloat(latEl.value),lo=parseFloat(lonEl.value);if(isNaN(la)||isNaN(lo)){alert('緯度経度が不正');return;}target={name:'カスタム',lat:la,lon:lo};presetEl.value='add';updateUI();});
+  arrow.style.transform = `rotate(${relative}deg)`;
+}
 
-presetEl.value='fuji';latEl.value=PRESETS.fuji.lat;lonEl.value=PRESETS.fuji.lon;
-navigator.geolocation.getCurrentPosition(p=>{userPos={lat:p.coords.latitude,lon:p.coords.longitude};updateUI();});
+setInterval(updateArrow, 100);
+
+
+// ----------------------------
+// iPhone コンパス許可取得
+// ----------------------------
+document.getElementById("startBtn").onclick = async () => {
+  if (typeof DeviceOrientationEvent.requestPermission === "function") {
+    const perm = await DeviceOrientationEvent.requestPermission();
+    if (perm !== "granted") {
+      alert("コンパス使用が許可されませんでした");
+      return;
+    }
+  }
+
+  window.addEventListener("deviceorientation", (e) => {
+    // iOS の場合は webkitCompassHeading を優先
+    if (e.webkitCompassHeading !== undefined) {
+      currentHeading = e.webkitCompassHeading;
+    } else {
+      // 通常のデバイス（Androidなど）
+      currentHeading = 360 - e.alpha;
+    }
+  });
+};
 </script>
+
 </body>
 </html>
