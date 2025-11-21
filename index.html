@@ -2,114 +2,136 @@
 <html lang="ja">
 <head>
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>ランドマーク方位コンパス</title>
+<title>ARランドマークコンパス</title>
 <style>
-  body { font-family: sans-serif; text-align: center; padding: 20px; }
-  #arrow {
-    font-size: 80px;
-    transition: transform 0.2s linear;
-    display: inline-block;
+  body, html {
+    margin: 0; padding: 0; overflow: hidden;
+    background: #000;
+    font-family: sans-serif;
+  }
+  #camera {
+    position: fixed;
+    top: 0; left: 0;
+    width: 100vw; height: 100vh;
+    object-fit: cover;
+    z-index: 1;
+  }
+  #label {
+    position: fixed;
+    left: 50%;
+    top: 50%;
+    font-size: 40px;
+    transform: translate(-50%, -50%);
+    color: #ffeb3b;
+    font-weight: bold;
+    text-shadow: 0 0 6px black;
+    z-index: 3;
+  }
+  #lmSelect {
+    position: fixed;
+    top: 10px; left: 10px;
+    z-index: 4;
+    font-size: 18px;
+  }
+  #startBtn {
+    position: fixed;
+    bottom: 10px; left: 10px;
+    z-index: 4;
+    font-size: 18px;
   }
 </style>
 </head>
 <body>
 
-<h2>ランドマーク方位コンパス</h2>
+<video id="camera" autoplay playsinline></video>
 
-<p>現在地 → ランドマークの方向</p>
-<div id="arrow">⬆️</div>
+<div id="label">→ 富士山</div>
 
-<p>
-  ランドマーク：
-  <select id="lmSelect">
-    <option value="fujisan">富士山</option>
-    <option value="skytree">スカイツリー</option>
-  </select>
-</p>
+<select id="lmSelect">
+  <option value="fujisan">富士山</option>
+  <option value="skytree">スカイツリー</option>
+</select>
 
-<button id="startBtn">コンパス使用を許可</button>
+<button id="startBtn">コンパス・カメラ許可</button>
 
 <script>
-// ランドマークの位置（緯度・経度）
+// ---- ランドマーク座標 ----
 const landmarks = {
-  fujisan: { name: "富士山", lat: 35.3606, lon: 138.7274 },
-  skytree: { name: "スカイツリー", lat: 35.7100, lon: 139.8107 }
+  fujisan:  { name:"富士山",   lat:35.3606, lon:138.7274 },
+  skytree:  { name:"スカイツリー", lat:35.7100, lon:139.8107 }
 };
 
-let currentHeading = 0;
 let currentPos = null;
+let currentHeading = 0;
 
-const arrow = document.getElementById("arrow");
-const lmSelect = document.getElementById("lmSelect");
-
-// ----------------------------
-// 現在地取得
-// ----------------------------
+// ---- 現在地を追跡 ----
 navigator.geolocation.watchPosition((pos) => {
-  currentPos = {
-    lat: pos.coords.latitude,
-    lon: pos.coords.longitude
-  };
-}, console.error, { enableHighAccuracy: true });
+  currentPos = { lat: pos.coords.latitude, lon: pos.coords.longitude };
+}, console.error, { enableHighAccuracy:true });
 
-
-// ----------------------------
-// 2点間の方位角を計算
-// ----------------------------
+// ---- 2点間の方位角 ----
 function bearing(lat1, lon1, lat2, lon2) {
-  const toRad = d => d * Math.PI / 180;
+  const rad = d => d*Math.PI/180;
+  const dLon = rad(lon2 - lon1);
 
-  const dLon = toRad(lon2 - lon1);
-  const y = Math.sin(dLon) * Math.cos(toRad(lat2));
-  const x =
-    Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) -
-    Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+  const y = Math.sin(dLon) * Math.cos(rad(lat2));
+  const x = Math.cos(rad(lat1))*Math.sin(rad(lat2)) -
+            Math.sin(rad(lat1))*Math.cos(rad(lat2))*Math.cos(dLon);
 
-  return (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  return (Math.atan2(y, x)*180/Math.PI + 360) % 360;
 }
 
+// ---- カメラ起動 ----
+async function startCamera() {
+  const video = document.getElementById("camera");
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: "environment" },
+    audio: false
+  });
+  video.srcObject = stream;
+}
 
-// ----------------------------
-// 画面の矢印を回転
-// ----------------------------
-function updateArrow() {
+// ---- ARラベル更新 ----
+function updateLabel() {
   if (!currentPos) return;
-
+  
   const lm = landmarks[lmSelect.value];
-  const targetBearing = bearing(currentPos.lat, currentPos.lon, lm.lat, lm.lon);
+  const targetBearing =
+    bearing(currentPos.lat, currentPos.lon, lm.lat, lm.lon);
 
-  // 自分の向きに対して、ランドマークが何度の方向にあるか
+  // 画面中央のテキストを、向きに応じて左右に動かす
   const relative = (targetBearing - currentHeading + 360) % 360;
+  const screenX = ((relative / 360) * window.innerWidth);
 
-  arrow.style.transform = `rotate(${relative}deg)`;
+  const label = document.getElementById("label");
+  label.style.left = `${screenX}px`;
+  label.textContent = lm.name + " →";
 }
 
-setInterval(updateArrow, 100);
+// 毎フレーム更新
+setInterval(updateLabel, 50);
 
-
-// ----------------------------
-// iPhone コンパス許可取得
-// ----------------------------
-document.getElementById("startBtn").onclick = async () => {
+// ---- ボタン → コンパス許可 + カメラ起動 ----
+startBtn.onclick = async () => {
+  // iOS のコンパス許可
   if (typeof DeviceOrientationEvent.requestPermission === "function") {
     const perm = await DeviceOrientationEvent.requestPermission();
     if (perm !== "granted") {
-      alert("コンパス使用が許可されませんでした");
+      alert("コンパスが許可されませんでした");
       return;
     }
   }
 
-  window.addEventListener("deviceorientation", (e) => {
-    // iOS の場合は webkitCompassHeading を優先
+  window.addEventListener("deviceorientation", (e)=>{
     if (e.webkitCompassHeading !== undefined) {
-      currentHeading = e.webkitCompassHeading;
+      currentHeading = e.webkitCompassHeading;  // iPhone
     } else {
-      // 通常のデバイス（Androidなど）
-      currentHeading = 360 - e.alpha;
+      currentHeading = 360 - e.alpha;           // Android
     }
   });
+
+  await startCamera();
 };
 </script>
-
 </body>
 </html>
